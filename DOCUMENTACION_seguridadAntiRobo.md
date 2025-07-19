@@ -1,105 +1,198 @@
-# Documentación: seguridadAntiRobo.ino
+# Documentación: Sistema de Seguridad Anti-Robo Vehicular
 
-Este documento describe el funcionamiento y la estructura del archivo `seguridadAntiRobo.ino`, un proyecto de Arduino para un sistema de seguridad antirrobo con conectividad WiFi, GPS y Firebase.
+Este documento describe el funcionamiento y la estructura del archivo `seguridadAntiRobo.ino`, un proyecto de ESP32 para un sistema de seguridad antirrobo vehicular con conectividad WiFi, GPS, Firebase y control de servomotor para bloqueo de frenos.
 
 ---
 
 ## Tabla de Contenidos
 - [Descripción General](#descripción-general)
+- [Características Principales](#características-principales)
 - [Dependencias](#dependencias)
-- [Definición de Credenciales y Configuración](#definición-de-credenciales-y-configuración)
-- [Inicialización de Pines y Objetos](#inicialización-de-pines-y-objetos)
-- [setup()](#setup)
-- [loop()](#loop)
-- [Función vibracionDetectada()](#función-vibraciondetectada)
+- [Configuración de Firebase](#configuración-de-firebase)
+- [Sistema de Credenciales WiFi Dinámico](#sistema-de-credenciales-wifi-dinámico)
+- [Hardware Requerido](#hardware-requerido)
+- [Configuración de Pines](#configuración-de-pines)
+- [Funcionamiento del Sistema](#funcionamiento-del-sistema)
+- [Estructura de Datos en Firebase](#estructura-de-datos-en-firebase)
+- [Notas de Seguridad](#notas-de-seguridad)
 
 ---
 
 ## Descripción General
 
-Este programa permite detectar vibraciones (posible intento de robo), obtener datos de ubicación GPS y enviar esta información a una base de datos en tiempo real de Firebase. El sistema utiliza un ESP32, un sensor de vibración y un módulo GPS.
+Este sistema de seguridad antirrobo vehicular utiliza un ESP32 para detectar vibraciones (posibles intentos de robo), obtener datos de ubicación GPS en tiempo real, y activar un mecanismo de bloqueo de frenos mediante un servomotor. Toda la información se transmite a Firebase para monitoreo remoto.
+
+## Características Principales
+
+- **Detección de Vibraciones**: Sensor de vibración conectado al vehículo
+- **Seguimiento GPS**: Ubicación, velocidad, altitud y timestamp en tiempo real
+- **Sistema de Bloqueo**: Servomotor que activa bloqueo de frenos por 5 segundos
+- **Conectividad WiFi Dinámica**: Credenciales WiFi obtenidas desde Firebase
+- **Monitoreo Remoto**: Datos enviados a Firebase para seguimiento desde aplicación móvil
+- **Indicadores Visuales**: LED que indica estado de vibración
 
 ## Dependencias
 
-- `WiFi.h`: Permite la conexión WiFi.
-- `Firebase_ESP_Client.h`: Cliente para interactuar con Firebase.
-- `HardwareSerial.h`: Comunicación serie adicional (para GPS).
-- `TinyGPSPlus.h`: Decodifica datos del módulo GPS.
-
-## Definición de Credenciales y Configuración
-
-- **WiFi:**
-  - `WIFI_SSID`, `WIFI_PASSWORD`: Ahora se obtienen desde variables de entorno mediante `getenv`. En el futuro, estas credenciales serán traídas dinámicamente desde Firebase.
-  - Ejemplo de definición de variables de entorno:
-    ```cpp
-    #define WIFI_SSID getenv("WIFI_SSID")
-    #define WIFI_PASSWORD getenv("WIFI_PASSWORD")
-    // En el futuro, estas variables serán traídas dinámicamente desde Firebase
-    // export WIFI_SSID="TuSSID"
-    // export WIFI_PASSWORD="TuPassword"
-    ```
-- **Firebase:**
-  - `API_KEY`, `DATABASE_URL`: Claves y URL de la base de datos.
-  - `USER_EMAIL`, `USER_PASSWORD`: Usuario autenticado en Firebase.
-
-## Inicialización de Pines y Objetos
-
-- `pinSensor`: Pin conectado al sensor de vibración.
-- `ledPin`: Pin de un LED indicador.
-- `gpsSerial`: Puerto serie para el GPS (GPIO16 como RX).
-- Objetos de Firebase y GPS.
-
-## setup()
-
-1. Inicializa la comunicación serie y los pines.
-2. Configura el puerto serie para el GPS.
-3. Conecta a la red WiFi (con timeout de 10 segundos).
-4. Configura y autentica la conexión a Firebase.
-
-## loop()
-
-1. Lee el estado del sensor de vibración y determina si hay vibración.
-2. Lee y decodifica datos del GPS si están disponibles.
-   - Extrae latitud, longitud, altitud, velocidad y fecha/hora.
-   - Envía estos datos a Firebase bajo la ruta del usuario autenticado.
-3. Si Firebase está listo:
-   - Envía el estado de vibración y un timestamp a la base de datos.
-   - Muestra mensajes de éxito o error por consola.
-4. Enciende o apaga el LED según la vibración detectada.
-5. Espera 800 ms antes de repetir el ciclo.
-
-## Función vibracionDetectada(estado)
-
-- Si el sensor detecta vibración (`estado == 1`):
-  - Enciende el LED y retorna `true`.
-- Si no hay vibración:
-  - Apaga el LED y retorna `false`.
-
----
-
-## Ejemplo de Estructura en Firebase
-
-```
-/UsersData/{uid}/gps/
-    latitud
-    longitud
-    altitud
-    velocidad
-    fechaHoraUTC
-/UsersData/{uid}/sensor/
-    vibracion
-    ultimaVez (timestamp)
+```cpp
+#include <WiFi.h>                    // Conexión WiFi
+#include <Firebase_ESP_Client.h>      // Cliente Firebase
+#include <HardwareSerial.h>           // Comunicación serie adicional
+#include <TinyGPSPlus.h>              // Decodificación GPS
+#include <Preferences.h>              // Almacenamiento local
+#include <ESP32Servo.h>               // Control de servomotor
 ```
 
----
+## Configuración de Firebase
+
+```cpp
+#define API_KEY "AIzaSyA1bqkhq6z446SbqKJRgqE4j-xOy5vyKGo"
+#define DATABASE_URL "https://seguridadantirobovehiculo-default-rtdb.firebaseio.com"
+#define USER_EMAIL "javier.ordonez.barra@gmail.com"
+#define USER_PASSWORD "1256347xd"
+```
+
+## Sistema de Credenciales WiFi Dinámico
+
+El sistema utiliza un enfoque de dos fases para la conexión WiFi:
+
+### Fase 1: Red Temporal
+- Se conecta inicialmente a una red WiFi temporal configurada en el código
+- Permite acceso a Firebase para obtener las credenciales reales
+
+### Fase 2: Red Configurada
+- Obtiene credenciales WiFi desde Firebase (`/UsersData/{uid}/wifi/`)
+- Almacena credenciales en memoria interna (Preferences)
+- Se reconecta a la red configurada desde la aplicación móvil
+- Renueva el token de Firebase después del cambio de red
+
+## Hardware Requerido
+
+- **ESP32**: Microcontrolador principal
+- **Sensor de Vibración**: Detecta movimientos sospechosos
+- **Módulo GPS**: Proporciona ubicación y datos de movimiento
+- **Servomotor**: Activa mecanismo de bloqueo de frenos
+- **LED Indicador**: Muestra estado de vibración
+- **Fuente de Alimentación**: 5V para servomotor (fuente externa recomendada)
+
+## Configuración de Pines
+
+```cpp
+const int pinSensor = 15;     // Sensor de vibración
+const int ledPin = 2;         // LED indicador
+const int servoPin = 13;      // Servomotor
+// GPS: RX=16, TX=17
+```
+
+## Funcionamiento del Sistema
+
+### Inicialización (setup())
+1. **Configuración de Hardware**: Inicializa pines, servomotor, GPS
+2. **Prueba de Servomotor**: Gira a 0°, 180°, 90° para verificar funcionamiento
+3. **Conexión WiFi Temporal**: Conecta a red temporal para acceso a Firebase
+4. **Autenticación Firebase**: Configura y autentica conexión
+5. **Obtención de Credenciales**: Lee credenciales WiFi desde Firebase
+6. **Reconexión WiFi**: Cambia a red configurada desde la aplicación
+7. **Renovación de Token**: Regenera token de Firebase después del cambio
+
+### Ciclo Principal (loop())
+1. **Lectura de Sensores**:
+   - Lee estado del sensor de vibración
+   - Procesa datos GPS si están disponibles
+
+2. **Envío de Datos GPS**:
+   - Latitud, longitud, altitud, velocidad
+   - Fecha y hora UTC formateada
+   - Envía a Firebase bajo ruta del usuario
+
+3. **Control de Vibración**:
+   - Envía estado de vibración a Firebase
+   - Actualiza timestamp de última detección
+   - Controla LED indicador
+
+4. **Sistema de Bloqueo**:
+   - **Activación**: Si detecta vibración y no está activado
+     - Gira servomotor a 180°
+     - Envía mensaje de alerta a Firebase
+     - Activa temporizador de 5 segundos
+   - **Desactivación**: Después de 5 segundos
+     - Vuelve servomotor a 0°
+     - Restaura mensaje de sistema libre
+     - Permite nueva activación
+
+### Variables de Control del Servomotor
+```cpp
+bool estaActivado = false;           // Estado actual del bloqueo
+unsigned long tiempoActivado = 0;    // Momento de activación
+```
+
+## Estructura de Datos en Firebase
+
+```
+/UsersData/{uid}/
+├── gps/
+│   ├── latitud (double)
+│   ├── longitud (double)
+│   ├── altitud (double)
+│   ├── velocidad (double)
+│   └── fechaHoraUTC (string)
+├── sensor/
+│   ├── vibracion (boolean)
+│   ├── ultimaVez (timestamp)
+│   └── estadoBloqueo (string)
+└── wifi/
+    ├── ssid (string)
+    └── password (string)
+```
+
+### Mensajes de Estado del Bloqueo
+- **Activado**: "🔴 Alerta: bloqueo de frenos activado por intento de intrusión"
+- **Libre**: "🟢 Sistema libre: sin bloqueo de frenos activo"
+
+## Funciones Auxiliares
+
+### vibracionDetectada(estado)
+- Procesa señal del sensor de vibración
+- Controla LED indicador
+- Retorna boolean indicando presencia de vibración
+
+### obtenerCredencialesWiFi(ssid, password)
+- Lee credenciales WiFi desde Firebase
+- Retorna true si la operación es exitosa
+- Maneja errores de conexión a Firebase
 
 ## Notas de Seguridad
-- No se recomienda dejar credenciales sensibles (WiFi, API keys, contraseñas) en el código fuente para producción.
-- Utilizar variables de entorno o mecanismos seguros para gestionar credenciales.
-- En el futuro, las credenciales Wi-Fi podrán ser gestionadas y traídas desde Firebase para mayor seguridad y flexibilidad.
+
+### Credenciales
+- Las credenciales de Firebase están hardcodeadas (no recomendado para producción)
+- El sistema de credenciales WiFi dinámico mejora la seguridad
+- Considerar implementar autenticación más robusta
+
+### Alimentación del Servomotor
+- **Recomendado**: Fuente externa de 5V con capacidad de 1A o más
+- **Evitar**: Alimentar desde pin VIN del ESP32 para servos grandes
+- **Importante**: GND común entre ESP32 y fuente del servo
+
+### Configuración de Red
+- Red temporal configurada en código para acceso inicial
+- Credenciales reales obtenidas dinámicamente desde Firebase
+- Sistema de reconexión automática con renovación de tokens
+
+## Solución de Problemas
+
+### Servomotor No Gira
+1. **Verificar alimentación**: Fuente de 5V con suficiente corriente
+2. **Conexiones**: GND común, señal en pin 13
+3. **Código de prueba**: Usar código mínimo para verificar hardware
+4. **Pin alternativo**: Probar con otros pines PWM (12, 14, 27, 26)
+
+### Problemas de Conexión WiFi
+1. **Red temporal**: Verificar credenciales en código
+2. **Firebase**: Confirmar credenciales y URL correctas
+3. **Reconexión**: Verificar proceso de cambio de red
 
 ---
 
 ## Autor
-- Javier Ordoñez Barra
-- Email: javier.ordonez.barra@gmail.com 
+- **Javier Ordoñez Barra**
+- Email: javier.ordonez.barra@gmail.com
+- Proyecto: Sistema de Seguridad Anti-Robo Vehicular 
